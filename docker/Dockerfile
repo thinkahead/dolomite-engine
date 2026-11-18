@@ -36,6 +36,15 @@ ENV PATH="/app/envs/.venv/bin:$PATH"
 RUN /bin/uv pip install --python /app/envs/.venv/bin/python einops \
       "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
 
+# Mamba2 SSM kernels (prebuilt wheels: cu12 torch2.10 cp312 cxx11abiTRUE; A100 sm_80). No nvcc in image.
+# lm-engine pins mamba-ssm==2.2.6.post3, but that tag has no torch2.10 wheel (max torch2.7); 2.3.2.post1 is
+# the oldest release with a torch2.10 wheel and keeps the ssd_combined/selective_state_update op API that
+# lm_engine/.../mamba2/op.py imports. causal-conv1d 1.7.0 = optional depthwise-conv speedup (matched abi).
+# --no-deps: torch, triton (bundled with torch) and einops are already in the venv; avoids churning them.
+RUN /bin/uv pip install --python /app/envs/.venv/bin/python --no-deps \
+      "https://github.com/state-spaces/mamba/releases/download/v2.3.2.post1/mamba_ssm-2.3.2.post1%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl" \
+      "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.7.0/causal_conv1d-1.7.0%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
+
 # C toolchain for Triton JIT: lm-engine's Triton kernels (e.g. fused_linear_cross_entropy)
 # compile a launcher at runtime and need a host C compiler + python headers.
 RUN apt-get update && apt-get install -y build-essential python3-dev && apt clean
