@@ -561,9 +561,13 @@ def train(
             if tuning_method == TuningMethod.full_finetuning:
                 metadata = {}
             else:
+                try:
+                    _commit_id = Repo(Path(__file__).parents[1], search_parent_directories=True).git.rev_parse("HEAD")
+                except Exception:
+                    _commit_id = "unknown"
                 metadata = {
                     "consumed_samples": global_step * global_batch_size,
-                    "commit_id": Repo(Path(__file__).parents[1]).git.rev_parse("HEAD"),
+                    "commit_id": _commit_id,
                     "cumulative_cost_usd": cumulative_cost_usd,
                 }
 

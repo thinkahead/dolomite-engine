@@ -63,6 +63,11 @@ def get_pretraining_dataloaders(
     args: TrainingArgs, tokenizer: TOKENIZER_TYPE, consumed_samples: int
 ) -> tuple[ResumableDataLoader, list[ResumableDataLoader], list[ResumableDataLoader]]:
     assert len(args.datasets) == 1
+
+    if args.datasets[0].class_name in ("FSDPDataset", "IBMDataset"):
+        from .ibm import get_ibm_dataloaders
+
+        return get_ibm_dataloaders(args, tokenizer)
     class_args = args.datasets[0].class_args
 
     assert args.datasets[0].max_input_tokens is None
