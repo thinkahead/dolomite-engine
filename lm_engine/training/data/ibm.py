@@ -10,6 +10,8 @@ from typing import Any, Callable, List, Optional, Set, Union
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pyarrow.fs as pafs
+import shutil
 import torch
 from torch.utils.data import IterableDataset, get_worker_info
 
@@ -408,6 +410,72 @@ class ParquetHandler(_ShardFileHandler):
 
     def slice(self, doc: List, index: int, n_pull: int) -> List:
         return doc[index : index + n_pull]
+
+
+class COSParquetHandler(ParquetHandler):
+    """
+    COS-streaming ParquetHandler: fetches each shard from object storage on open(), caches it on
+    node-local disk, and evicts old shards (LRU, `keep` deep). Enumeration/sizes/doc-counts come from a
+    precomputed meta/counts.csv + zero-byte placeholder tree (scripts/cos_build_manifest.py), so setup()
+    downloads nothing; only the shards a worker actually reads are pulled, then deleted -> the PVC never
+    holds the full dataset. Config is threaded via the FSDPDataset class_args (cfg.cos_*).
+
+    Mapping:  local placeholder  <local_root>/<rel>  <->  COS object  s3://<bucket>/<cos_root>/<rel>
+    """
+
+    def __init__(self, tokenizer, col_name="contents", *, bucket, cos_root, local_root, cache_dir, keep=2):
+        super().__init__(tokenizer, col_name)
+        self.bucket = bucket
+        self.cos_root = cos_root.strip("/")
+        self.local_root = local_root.rstrip("/")
+        self.cache_dir = os.path.join(cache_dir, str(os.getpid()))
+        self.keep = max(1, int(keep))
+        self._fs = None
+        self._lru = []
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+    def _s3(self):
+        if self._fs is None:
+            ep = os.environ["AWS_ENDPOINT_URL"].replace("https://", "").replace("http://", "")
+            self._fs = pafs.S3FileSystem(
+                endpoint_override=ep,
+                access_key=os.environ["AWS_ACCESS_KEY_ID"],
+                secret_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+                region=os.environ.get("AWS_REGION", "us-east"),
+                scheme="https",
+            )
+        return self._fs
+
+    def _cos_key(self, path):
+        rel = os.path.relpath(path, self.local_root)
+        return rel, f"{self.cos_root}/{rel}"
+
+    def _fetch(self, path):
+        rel, key = self._cos_key(path)
+        local = os.path.join(self.cache_dir, rel)
+        if not (os.path.exists(local) and os.path.getsize(local) > 0):
+            os.makedirs(os.path.dirname(local), exist_ok=True)
+            tmp = local + ".tmp"
+            with self._s3().open_input_file(f"{self.bucket}/{key}") as s, open(tmp, "wb") as d:
+                shutil.copyfileobj(s, d, 16 * 1024 * 1024)
+            os.replace(tmp, local)
+        if local in self._lru:
+            self._lru.remove(local)
+        self._lru.append(local)
+        while len(self._lru) > self.keep:
+            old = self._lru.pop(0)
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+        return local
+
+    def open(self, path):
+        return super().open(self._fetch(path))
+
+    def length(self, path):
+        _, key = self._cos_key(path)
+        return pq.read_metadata(self._s3().open_input_file(f"{self.bucket}/{key}")).num_rows
 
 
 class PreprocessDataset(_WrapperDataset):
@@ -1402,7 +1470,18 @@ def build_experimental_data_loader(cfg, tokenizer: TOKENIZER_TYPE):
     assert cfg.file_type in _handler_map, f"File type {cfg.file_type} is not recognized ({list(_handler_map.keys())})"
     if cfg.file_type == "hf_parquet":
         assert tokenizer is not None, "You must provide a tokenizer path for hf_parquet raw text file shards."
-        filehandler = ParquetHandler(tokenizer, cfg.col_name)
+        if getattr(cfg, "cos_stream", False):
+            filehandler = COSParquetHandler(
+                tokenizer,
+                cfg.col_name,
+                bucket=cfg.cos_bucket,
+                cos_root=cfg.cos_root,
+                local_root=cfg.dataset_path,
+                cache_dir=cfg.cos_cache_dir,
+                keep=getattr(cfg, "cos_keep", 2),
+            )
+        else:
+            filehandler = ParquetHandler(tokenizer, cfg.col_name)
     else:
         filehandler = _handler_map[cfg.file_type](cfg.col_name)
 
