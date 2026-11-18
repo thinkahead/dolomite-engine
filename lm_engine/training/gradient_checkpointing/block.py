@@ -32,7 +32,7 @@ def block_checkpointing(
                 return True
         return False
 
-    checkpoint_wrapper_function = checkpoint_wrapper
+    checkpoint_wrapper_function = partial(checkpoint_wrapper, determinism_check="none")
     if use_reentrant:
         checkpoint_wrapper_function = partial(checkpoint_wrapper, checkpoint_impl=CheckpointImpl.REENTRANT)
 

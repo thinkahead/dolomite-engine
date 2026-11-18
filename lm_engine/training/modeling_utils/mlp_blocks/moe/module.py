@@ -317,7 +317,7 @@ class MoE(DTensorModule):
         global_expert_frequency = expert_frequency
         if ProcessGroupManager.is_initialized() and ProcessGroupManager.get_data_parallel_world_size() > 1:
             global_expert_frequency = all_reduce(
-                expert_frequency, reduceOp="sum", group=ProcessGroupManager.get_data_parallel_group()
+                expert_frequency.to(torch.int64), reduceOp="sum", group=ProcessGroupManager.get_data_parallel_group()
             )
 
         normalized_acc_probs = F.normalize(acc_probs, p=1, dim=0)
@@ -343,7 +343,7 @@ class MoE(DTensorModule):
         metrics_tracker[f"{MOE_Z_LOSS}/{self.layer_idx}"] = (moe_z_loss, self.z_loss_coefficient)
         # log the local counts so the metrics all-reduce gives the counts per micro-batch, logging the all-reduced
         # counts would scale them by the context parallel world size
-        metrics_tracker[f"{MOE_EXPERT_FREQUENCY}/{self.layer_idx}"] = expert_frequency
+        metrics_tracker[f"{MOE_EXPERT_FREQUENCY}/{self.layer_idx}"] = expert_frequency.to(torch.int64)
 
         return moe_aux_loss, moe_z_loss
 
