@@ -931,13 +931,29 @@ class StreamingDocDataset(_StatefulDataset):
 
             # Assemble document set owned by this worker:
             # listdir, assemble shardfraglist (ind -> shard, frag)
-            shards = [
-                os.path.join(root, name)[len(datapath) + 1 :]
-                for root, dirs, files in os.walk(datapath, topdown=False)
-                for name in files
-                if self.filehandler.is_legal(os.path.join(root, name))
-            ]
-            shards.sort()  # Ensure consistent sharding across machines
+            if os.environ.get("LME_COS_STREAM", "") == "1":
+                # COS streaming: shard names come from meta/counts.csv (no os.walk / placeholder
+                # tree). sizes + doc_counts below already read from the same CSV, so setup touches
+                # no shard file; only the shards a worker reads are later pulled by COSParquetHandler.
+                _meta = os.path.join(pardir, "meta")
+                _cf = [x for x in os.listdir(_meta) if "counts" in x and "csv" in x] if os.path.exists(_meta) else []
+                assert _cf, f"LME_COS_STREAM=1 requires {_meta}/counts*.csv"
+                shards = []
+                with open(os.path.join(_meta, _cf[0])) as _f:
+                    for _row in csv.DictReader(_f):
+                        _fp = _row["dataset/filename"]
+                        _p = _fp.rfind("/" + dataset + "/")
+                        if _p >= 0:
+                            shards.append(_fp[_p + len(dataset) + 2 :])
+                shards = sorted(set(shards))
+            else:
+                shards = [
+                    os.path.join(root, name)[len(datapath) + 1 :]
+                    for root, dirs, files in os.walk(datapath, topdown=False)
+                    for name in files
+                    if self.filehandler.is_legal(os.path.join(root, name))
+                ]
+                shards.sort()  # Ensure consistent sharding across machines
             # print(shards)
 
             # Find metadata file
